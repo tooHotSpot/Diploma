@@ -18,10 +18,8 @@ from torchvision import transforms, utils
 
 _BATCH_NORM_DECAY = 0.997
 _BATCH_NORM_EPSILON = 1e-5
-WEIGHT_DECAY = 0.0005
+WEIGHT_DECAY = 0.001
 w = h = 105
-
-FLAG_AUGMENTATION_OK = 0
 
 
 class OmniglotDataset(Dataset):
@@ -70,11 +68,11 @@ class SiameseNetwork:
     AUGMENT = False
     RESTORE = False
 
-    def __init__(self, DEBUG, AUGMENT, restore_models_folder=None):
+    def __init__(self, DEBUG, AUGMENT, restore_models_folder=None, ROOT='/ssd480/amal/Siamese'):
         ops.reset_default_graph()  # to be able to rerun the model without overwriting tf variables
         self.DEBUG = DEBUG
         self.AUGMENT = AUGMENT
-        self.ROOT = '/ssd480/amal/Siamese'
+        self.ROOT = ROOT
         if not os.path.exists(self.ROOT):
             print(self.ROOT, ' path not exists as root path')
             self.ROOT = ''
@@ -272,7 +270,9 @@ class SiameseNetwork:
                       'top_val_acc': 0,
                       'eval_acc': 0,
                       'hour': datetime.now().hour,
-                      'minute': datetime.now().minute}
+                      'minute': datetime.now().minute,
+                      'early_stopping_limit': (20 if self.AUGMENT else 45),
+                      }
             data.pickle_it(params, os.path.join(self.models_folder, 'params.json'))
             params = data.unpickle_it(os.path.join(self.models_folder, 'params.json'))
             print(params)
@@ -360,6 +360,7 @@ class SiameseNetwork:
 
         for epoch in range(params['last_epoch'], num_epochs):
             # One extra subepoch for code check
+            print('Epoch ', epoch)
             subepoch = 0
             subepoch_loss = subepoch_acc = 0
             dataloader = DataLoader(omniglot_dataset, batch_size=batch_size, shuffle=True, num_workers=1)
@@ -380,8 +381,8 @@ class SiameseNetwork:
                 }
                 _, batch_cost, acc, batch_predictions_labels, summary = sess.run([train_op, loss, accuracy, predictions_labels, merged_summary_op], feed_dict)
                 summary_writer.add_summary(summary, num_train_batches * epoch + i)
-                subepoch_acc += acc / num_train_batches
-                subepoch_loss += batch_cost / num_train_batches
+                subepoch_acc += acc / num_subepoch_batches
+                subepoch_loss += batch_cost / num_subepoch_batches
 
                 if (i % num_subepoch_batches == 0 and i > 0) or i == num_train_batches - 1 or epoch == -1:
                     time_now = datetime.now()
@@ -417,7 +418,7 @@ class SiameseNetwork:
                     subepoch_loss = subepoch_acc = 0
                     subepoch += 1
 
-                    if early_stopping and step - top_val_acc_step > 20:
+                    if early_stopping and step - top_val_acc_step > params['early_stopping_limit']:
                         print('Finished to train because of early stopping.')
                         return
 
@@ -431,12 +432,6 @@ if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
-    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=False)
-    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=150000, num_epochs=100, batch_size=128)
+    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=True)
+    mySiameseNetwork.fit(starter_learning_rate=0.1, back_pairs_amount=30000, num_epochs=100, batch_size=128, optimization_algorithm='Momentum')
     del mySiameseNetwork
-
-    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=False)
-    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=90000, num_epochs=100, batch_size=128)
-    del mySiameseNetwork
-
-
