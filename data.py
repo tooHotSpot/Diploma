@@ -83,7 +83,7 @@ def load_image_dict(ROOT, subdataset_path, subdataset_name, clear=False):
     resticted_alpahbets = ('Atlantean', 'Ge_ez', 'Glagolitic', 'Gurmukhi', 'Kannada', 'Malayalam',
                            'Manipuri', 'Old_Church_Slavonic_(Cyrillic)', 'Tengwar', 'Tibetan')
 
-    pkl_file = os.path.join(ROOT, 'OmniglotData', subdataset_name + '.pkl')
+    pkl_file = os.path.join(ROOT, 'Data', subdataset_name + '.pkl')
     print('Trying to load ', pkl_file)
     if os.path.exists(pkl_file):
         print(pkl_file, ' already exists, loading to memory.')
