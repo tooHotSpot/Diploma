@@ -49,8 +49,8 @@ class OmniglotDataset(Dataset):
 
         # One time real image needed, others - augmented if it is enabled
         if item > self.pairs_amount:
-            image1 = data.augment_image(image1)
-            image2 = data.augment_image(image2)
+            image1 = data.augment_int_image(image1, borderValue=255)
+            image2 = data.augment_int_image(image2, borderValue=255)
 
         pair = (np.array([image1, image2], dtype=np.float32) - 127.5) / 127.5
         sample = {
@@ -85,7 +85,9 @@ class SiameseNetwork:
                 print(restore_models_folder, ' does not exist or empty')
             self.models_folder = restore_models_folder
         else:
-            self.models_folder = os.path.join(self.ROOT, 'models', str(datetime.now()).replace(':', '-')[:-7])
+            b = datetime.now()
+            tmp = '{:02}-{:02} {:02}-{:02}-{:02} {}'.format(b.month, b.day, b.hour, b.minute, b.second, ('$' if self.AUGMENT else ''))
+            self.models_folder = os.path.join(self.ROOT, 'models', tmp)
             if not os.path.exists(self.models_folder):
                 os.makedirs(self.models_folder)
 
@@ -271,7 +273,7 @@ class SiameseNetwork:
                       'eval_acc': 0,
                       'hour': datetime.now().hour,
                       'minute': datetime.now().minute,
-                      'early_stopping_limit': (20 if self.AUGMENT else 45),
+                      'early_stopping_limit': (65 if self.AUGMENT else 30),
                       }
             data.pickle_it(params, os.path.join(self.models_folder, 'params.json'))
             params = data.unpickle_it(os.path.join(self.models_folder, 'params.json'))
@@ -433,5 +435,13 @@ if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
     mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=True)
-    mySiameseNetwork.fit(starter_learning_rate=0.1, back_pairs_amount=30000, num_epochs=100, batch_size=128, optimization_algorithm='Momentum')
+    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=150000, num_epochs=100, batch_size=128, optimization_algorithm='Adagrad')
+    del mySiameseNetwork
+
+    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=False)
+    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=90000, num_epochs=100, batch_size=128, optimization_algorithm='Adagrad')
+    del mySiameseNetwork
+
+    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=True)
+    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=90000, num_epochs=100, batch_size=128, optimization_algorithm='Adagrad')
     del mySiameseNetwork

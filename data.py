@@ -253,26 +253,27 @@ def generate_one_shot_trials(images_dict):
     return all_comparisons_array  # , all_comparisons_answers_list
 
 
-def augment_image(image):
+def augment_int_image(oldimage, borderValue):
+    image = oldimage.copy()
     image = image.reshape(105, 105)
-    a = np.random.randint(low=0, high=1, size=7)
-    theta = a[0] * np.random.randint(-10, 10)
+    a = np.random.choice([0, 1], size=7)
+    theta = a[0] * np.random.randint(-15, 15)
     M = cv2.getRotationMatrix2D((105 / 2, 105 / 2), theta, 1)
-    image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=1.0)
+    image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=borderValue)
     M = np.float32([[1, 0, 0],
                     [0, 1, 0]])
     # Shearing: ρx, ρy ∈ [−0.3, 0.3] in rad -> [-0.3 * 180 / math.pi, 0.3 * 180 / math.pi] in angles
-    rad = a[1] * np.random.randint(-5, 5) / 10
+    rad = a[1] * np.random.randint(-3, 4) / 10
     M[0, 1] = -np.sin(rad)
-    rad = a[2] * np.random.randint(-5, 5) / 10
+    rad = a[2] * np.random.randint(-3, 4) / 10
     M[1, 1] = np.cos(rad)
-    # Translation: tx, ty ∈ [−2, 2]
-    M[0, 2] = a[5] * np.random.randint(-5, 5)
-    M[1, 2] = a[6] * np.random.randint(-5, 5)
-    # Scaling: sx, sy ∈ [0.8, 1.2]
-    M[0, 0] = a[3] * np.random.randint(8, 12) / 10 + (1 - a[3])
-    M[1, 1] = a[4] * np.random.randint(8, 12) / 10 + (1 - a[4])
-    image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=1.0)  # > 0
+    # # Translation: tx, ty ∈ [−2, 2]
+    M[0, 2] = a[5] * np.random.randint(-4, 5)
+    M[1, 2] = a[6] * np.random.randint(-4, 5)
+    # # Scaling: sx, sy ∈ [0.8, 1.2]
+    M[0, 0] = a[3] * np.random.randint(8, 13) / 10 + (1 - a[3])
+    M[1, 1] = a[4] * np.random.randint(8, 13) / 10 + (1 - a[4])
+    image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=borderValue)  # > 0
     return image
 
 
