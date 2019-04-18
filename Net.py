@@ -18,8 +18,13 @@ from torchvision import transforms, utils
 
 _BATCH_NORM_DECAY = 0.997
 _BATCH_NORM_EPSILON = 1e-5
-WEIGHT_DECAY = 0.001
+
 w = h = 105
+
+ops.reset_default_graph()  # to be able to rerun the model without overwriting tf variables
+config = tf.ConfigProto(log_device_placement=False)
+config.gpu_options.per_process_gpu_memory_fraction = 0.7
+sess = tf.Session(config=config)
 
 
 class OmniglotDataset(Dataset):
@@ -67,12 +72,14 @@ class SiameseNetwork:
     logs_path = None
     AUGMENT = False
     RESTORE = False
+    include_residual = False
 
-    def __init__(self, DEBUG, AUGMENT, restore_models_folder=None, ROOT='/ssd480/amal/Siamese'):
-        ops.reset_default_graph()  # to be able to rerun the model without overwriting tf variables
+    def __init__(self, DEBUG, AUGMENT, back_pairs_amount, restore_models_folder=None, ROOT='/ssd480/amal/Siamese'):
         self.DEBUG = DEBUG
         self.AUGMENT = AUGMENT
         self.ROOT = ROOT
+        self.back_pairs_amount = back_pairs_amount
+
         if not os.path.exists(self.ROOT):
             print(self.ROOT, ' path not exists as root path')
             self.ROOT = ''
@@ -86,7 +93,7 @@ class SiameseNetwork:
             self.models_folder = restore_models_folder
         else:
             b = datetime.now()
-            tmp = '{:02}-{:02} {:02}-{:02}-{:02} {}'.format(b.month, b.day, b.hour, b.minute, b.second, ('$' if self.AUGMENT else ''))
+            tmp = '{:02}-{:02} {:02}-{:02}-{:02} {}{}'.format(b.month, b.day, b.hour, b.minute, b.second, back_pairs_amount // 1000, ('Kx9' if self.AUGMENT else 'K'))
             self.models_folder = os.path.join(self.ROOT, 'models', tmp)
             if not os.path.exists(self.models_folder):
                 os.makedirs(self.models_folder)
@@ -116,11 +123,45 @@ class SiameseNetwork:
         # print('-->Layer ', output)
 
     def twin(self, x, is_training):
+        def SEConvolutionalBlock(InitialX):
+            # Residual block
+            # In case after max-pooling batch norm by channels is already made and usage of full pre-activation scheme, no BN and Relu performed
+            channels = InitialX.shape[-1]
+            WResidual1 = tf.get_variable('WOne', [3, 3, channels, channels], tf.float32, tf.keras.initializers.he_normal())
+            ResidualCONV1 = tf.nn.conv2d(InitialX, WResidual1, strides=[1, 1, 1, 1], padding='SAME')
+            ResidualCONV1 = tf.layers.batch_normalization(inputs=ResidualCONV1, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training,
+                                                          fused=True)
+            ResidualZ1 = tf.nn.relu(ResidualCONV1)
+            WResidual2 = tf.get_variable('WTwo', [3, 3, channels, channels], tf.float32, tf.keras.initializers.he_normal())
+            ResidualCONV2 = tf.nn.conv2d(ResidualZ1, WResidual2, strides=[1, 1, 1, 1], padding='SAME')
+            ResidualCONV2 = tf.layers.batch_normalization(inputs=ResidualCONV2, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training,
+                                                          fused=True)
+            ResidualZ2 = tf.nn.relu(ResidualCONV2)
+            # Squeeze block
+            GPA = tf.nn.avg_pool(ResidualZ2, ksize=[1, InitialX.shape[1], InitialX.shape[2], 1], strides=[1, 1, 1, 1], padding="VALID", name="GlobalAveragePooling")
+            GPA = tf.reshape(GPA, [-1, channels], name="GPAFlattened")
+            WSqueeze = tf.get_variable("WSqueeze1", [GPA.shape[1], channels // 4], tf.float32, tf.glorot_normal_initializer())
+            biasSqueeze = tf.get_variable("biasSqueeze1", [channels // 4], tf.float32, tf.glorot_uniform_initializer())
+            SqueezeFC1 = tf.matmul(GPA, WSqueeze, name="SqueezeFC1")
+            SqueezeFC1 = tf.layers.batch_normalization(inputs=SqueezeFC1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training, fused=True)
+            SqueezeFC1 = tf.nn.relu(SqueezeFC1 + biasSqueeze)
+            WSqueeze = tf.get_variable("WSqueeze2", [channels // 4, channels], tf.float32, tf.glorot_normal_initializer())
+            biasSqueeze = tf.get_variable("biasSqueeze2", [channels], tf.float32, tf.glorot_uniform_initializer())
+            SqueezeFC2 = tf.matmul(SqueezeFC1, WSqueeze, name="SqueezeFC2")
+            SqueezeFC2 = tf.layers.batch_normalization(inputs=SqueezeFC2, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training, fused=True)
+            SqueezeFC2 = tf.nn.sigmoid(SqueezeFC2 + biasSqueeze)
+            # Excitation
+            Excitation = tf.reshape(SqueezeFC2, shape=[-1, 1, 1, channels])
+            Scaled = tf.multiply(Excitation, InitialX, name="Scaled")
+            return InitialX + Scaled
+
         name = 'CONV1'
         with tf.variable_scope(name):
             SHAPE = 64
             if self.DEBUG:
                 SHAPE = 16
+            if self.include_residual:
+                SHAPE = 64
             # Input: [?, 105, 105, 1], output: [?, 48, 48, 64]
             W = tf.get_variable('W', [10, 10, 1, SHAPE], tf.float32, tf.keras.initializers.he_normal())
             b = tf.get_variable('b', [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
@@ -130,12 +171,20 @@ class SiameseNetwork:
             CONV1 = tf.nn.max_pool(tf.nn.relu(CONV1 + b), ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
             self.layer_print(name, x, W, b, CONV1)
 
+        if self.include_residual:
+            for i in range(5):
+                with tf.variable_scope('CONV1SE_1_' + str(i)):
+                    CONV1 = SEConvolutionalBlock(CONV1)
+
         name = 'CONV2'
         with tf.variable_scope(name):
             # Input: [?, 48, 48, 64], output: [?, 21, 21, 128]
             SHAPE = 128
             if self.DEBUG:
                 SHAPE = 16
+            if self.include_residual:
+                SHAPE = 64
+
             W = tf.get_variable("W", [7, 7, CONV1.shape[-1], SHAPE], tf.float32, tf.keras.initializers.he_normal())
             b = tf.get_variable("b", [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
             CONV2 = tf.nn.conv2d(CONV1, W, strides=[1, 1, 1, 1], padding='VALID')
@@ -144,12 +193,19 @@ class SiameseNetwork:
             CONV2 = tf.nn.max_pool(tf.nn.relu(CONV2 + b), ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
             self.layer_print(name, CONV1, W, b, CONV2)
 
+        if self.include_residual:
+            for i in range(5):
+                with tf.variable_scope('SE_2_' + str(i)):
+                    CONV2 = SEConvolutionalBlock(CONV2)
+
         name = 'CONV3'
         with tf.variable_scope(name):
             # Input: [?, 21, 21, 128], output: [?, 9, 9, 128],
             SHAPE = 128
             if self.DEBUG:
                 SHAPE = 16
+            if self.include_residual:
+                SHAPE = 64
             W = tf.get_variable('W', [4, 4, CONV2.shape[-1], SHAPE], tf.float32, tf.keras.initializers.he_normal())
             b = tf.get_variable('b', [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
             CONV3 = tf.nn.conv2d(CONV2, W, strides=[1, 1, 1, 1], padding='VALID')
@@ -158,12 +214,19 @@ class SiameseNetwork:
             CONV3 = tf.nn.max_pool(tf.nn.relu(CONV3 + b), ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
             self.layer_print(name, CONV2, W, b, CONV3)
 
+        if self.include_residual:
+            for i in range(5):
+                with tf.variable_scope('SE_3_' + str(i)):
+                    CONV3 = SEConvolutionalBlock(CONV3)
+
         name = 'CONV4-Flattened'
         with tf.variable_scope(name):
             # Input: [?, 9, 9, 128], output: [?, 6, 6, 256],
             SHAPE = 256
             if self.DEBUG:
                 SHAPE = 16
+            if self.include_residual:
+                SHAPE = 64
             W = tf.get_variable('W', [4, 4, CONV3.shape[-1], SHAPE], tf.float32, tf.keras.initializers.he_normal())
             b = tf.get_variable('b', [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
             CONV4 = tf.nn.conv2d(CONV3, W, strides=[1, 1, 1, 1], padding='VALID')
@@ -242,9 +305,19 @@ class SiameseNetwork:
         total_acc = np.sum(np.diagonal(confusion_matrix)) / 400
         return np.around(total_acc, decimals=4)
 
-    def fit(self, starter_learning_rate=0.01, back_pairs_amount=30000, num_epochs=100,
-            batch_size=128, early_stopping=True, optimization_algorithm='Adagrad'):
+    def fit(self, starter_learning_rate=0.01, num_epochs=100,
+            batch_size=128, early_stopping=True, optimization_algorithm='Adagrad', WEIGHT_DECAY=0.0005):
 
+        x1 = tf.placeholder(tf.float32, shape=[None, w, h, 1], name='X1')
+        x2 = tf.placeholder(tf.float32, shape=[None, w, h, 1], name='X2')
+        y = tf.placeholder(tf.float32, shape=[None, 1], name='Y')
+        tf_is_training = tf.placeholder(tf.bool)
+
+        predictions = self.model(x1, x2, tf_is_training)
+        predictions_labels = tf.round(tf.sigmoid(predictions))
+        accuracy = tf.reduce_mean(tf.cast(tf.equal(predictions_labels, y), tf.float32))
+
+        back_pairs_amount = self.back_pairs_amount
         print('Background pairs amount: {}, augmentation: {}'.format(back_pairs_amount, self.AUGMENT))
         print('Num epochs: {}, early stopping: {}, weight decay value: {}'.format(num_epochs, early_stopping, WEIGHT_DECAY))
         print('Starter learning rate {}, batch_size {}, optimizer {}'.format(starter_learning_rate, batch_size, optimization_algorithm))
@@ -273,7 +346,8 @@ class SiameseNetwork:
                       'eval_acc': 0,
                       'hour': datetime.now().hour,
                       'minute': datetime.now().minute,
-                      'early_stopping_limit': (65 if self.AUGMENT else 30),
+                      'early_stopping_limit': (65 if self.AUGMENT else 20),
+                      'residuals':self.include_residual
                       }
             data.pickle_it(params, os.path.join(self.models_folder, 'params.json'))
             params = data.unpickle_it(os.path.join(self.models_folder, 'params.json'))
@@ -302,14 +376,6 @@ class SiameseNetwork:
         print('Amount of validation [{}] & test [{}] one-shot classification batches'.format(num_val_trials_batches, num_eval_trials_batches))
         # endregion
         # region TFUtils
-        x1 = tf.placeholder(tf.float32, shape=[None, w, h, 1], name='X1')
-        x2 = tf.placeholder(tf.float32, shape=[None, w, h, 1], name='X2')
-        y = tf.placeholder(tf.float32, shape=[None, 1], name='Y')
-        tf_is_training = tf.placeholder(tf.bool)
-
-        predictions = self.model(x1, x2, tf_is_training)
-        predictions_labels = tf.round(tf.sigmoid(predictions))
-        accuracy = tf.reduce_mean(tf.cast(tf.equal(predictions_labels, y), tf.float32))
 
         loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=predictions))
         reg_loss = WEIGHT_DECAY * tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables()])
@@ -322,7 +388,7 @@ class SiameseNetwork:
 
         saver = tf.train.Saver()
         global_step = tf.Variable(0, trainable=False)
-        learning_rate = tf.train.exponential_decay(starter_learning_rate, global_step, num_train_batches, 0.99)
+        learning_rate = tf.train.exponential_decay(starter_learning_rate, global_step, num_train_batches, 0.5)
 
         optimizer = None
         if optimization_algorithm == 'Adagrad':
@@ -337,9 +403,7 @@ class SiameseNetwork:
             train_op = optimizer.minimize(total_loss, global_step=global_step)
         merged_summary_op = tf.summary.merge_all()
 
-        config = tf.ConfigProto(log_device_placement=False)
-        config.gpu_options.per_process_gpu_memory_fraction = 0.5
-        sess = tf.Session(config=config)
+
         sess_elements = [sess, x1, x2, y, tf_is_training, predictions, accuracy, loss]
 
         sess.run(tf.global_variables_initializer())
@@ -432,16 +496,9 @@ class SiameseNetwork:
 
 if __name__ == '__main__':
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
-    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=True)
-    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=150000, num_epochs=100, batch_size=128, optimization_algorithm='Adagrad')
-    del mySiameseNetwork
-
-    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=False)
-    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=90000, num_epochs=100, batch_size=128, optimization_algorithm='Adagrad')
-    del mySiameseNetwork
-
-    mySiameseNetwork = SiameseNetwork(DEBUG=False, AUGMENT=True)
-    mySiameseNetwork.fit(starter_learning_rate=0.01, back_pairs_amount=90000, num_epochs=100, batch_size=128, optimization_algorithm='Adagrad')
+    mySiameseNetwork = SiameseNetwork(DEBUG=False, back_pairs_amount=30000, AUGMENT=False)
+    mySiameseNetwork.include_residual = True
+    mySiameseNetwork.fit(starter_learning_rate=0.01, num_epochs=100, batch_size=32, optimization_algorithm='Adagrad')
     del mySiameseNetwork
