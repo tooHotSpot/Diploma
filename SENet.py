@@ -22,11 +22,12 @@ _BATCH_NORM_EPSILON = 1e-5
 w = h = 105
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 ops.reset_default_graph()  # to be able to rerun the model without overwriting tf variables
 config = tf.ConfigProto(log_device_placement=False)
-config.gpu_options.per_process_gpu_memory_fraction = 0.8
+config.gpu_options.allow_growth = True
+# config.gpu_options.per_process_gpu_memory_fraction = 0.95
 sess = tf.Session(config=config)
 
 
@@ -110,135 +111,139 @@ class SiameseNetwork:
         print([x.name for x in local_device_protos])
 
     def layer_print(self, name, inputs, W, b, output):
-        pass
-        # if type(name) == list:
-        #     print(name, end=': ')
-        # for attr in inputs, W, output:
-        #     try:
-        #         print(attr.name, attr.shape, end=' - ')
-        #     except AttributeError:
-        #         print(attr, end=' ')
-        # print(name, inputs.name, inputs.shape, W.name, W.shape, b.name, b.shape, output.name, sep=' - ')
-        # print('********************** ', name, ' **********************')
-        # print('-->Inputs: ', inputs,
-        # print('-->Weights: ', W)
-        # print('-->Bias: ', b)
-        # print('-->Layer ', output)
+        return
+        if type(name) == list:
+            print(name, end=': ')
+        for attr in inputs, W, output:
+            try:
+                print(attr.name, attr.shape, end=' - ')
+            except AttributeError:
+                print(attr, end=' ')
+        print(name, inputs.name, inputs.shape, W.name, W.shape, b.name, b.shape, output.name, sep=' - ')
+        print('********************** ', name, ' **********************')
+        # print('-->Inputs: ', inputs, '-->Weights: ', W, '-->Bias: ', b, '-->Layer ', output)
 
     def twin(self, x, is_training):
-        def SEConvolutionalBlock(InitialX):
-            # Residual block
-            # In case after max-pooling batch norm by channels is already made and usage of full pre-activation scheme, no BN and Relu performed
-            channels = InitialX.shape[-1]
-            WResidual1 = tf.get_variable('WOne', [3, 3, channels, channels], tf.float32, tf.keras.initializers.he_normal())
-            ResidualCONV1 = tf.nn.conv2d(InitialX, WResidual1, strides=[1, 1, 1, 1], padding='SAME')
-            ResidualCONV1 = tf.layers.batch_normalization(inputs=ResidualCONV1, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training,
-                                                          fused=True)
-            ResidualZ1 = tf.nn.relu(ResidualCONV1)
-            WResidual2 = tf.get_variable('WTwo', [3, 3, channels, channels], tf.float32, tf.keras.initializers.he_normal())
-            ResidualCONV2 = tf.nn.conv2d(ResidualZ1, WResidual2, strides=[1, 1, 1, 1], padding='SAME')
-            ResidualCONV2 = tf.layers.batch_normalization(inputs=ResidualCONV2, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training,
-                                                          fused=True)
-            ResidualZ2 = tf.nn.relu(ResidualCONV2)
-            # Squeeze block
-            GPA = tf.nn.avg_pool(ResidualZ2, ksize=[1, InitialX.shape[1], InitialX.shape[2], 1], strides=[1, 1, 1, 1], padding="VALID", name="GlobalAveragePooling")
-            GPA = tf.reshape(GPA, [-1, channels], name="GPAFlattened")
-            WSqueeze = tf.get_variable("WSqueeze1", [GPA.shape[1], channels // 4], tf.float32, tf.glorot_normal_initializer())
-            biasSqueeze = tf.get_variable("biasSqueeze1", [channels // 4], tf.float32, tf.glorot_uniform_initializer())
-            SqueezeFC1 = tf.matmul(GPA, WSqueeze, name="SqueezeFC1")
-            SqueezeFC1 = tf.layers.batch_normalization(inputs=SqueezeFC1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training, fused=True)
-            SqueezeFC1 = tf.nn.relu(SqueezeFC1 + biasSqueeze)
-            WSqueeze = tf.get_variable("WSqueeze2", [channels // 4, channels], tf.float32, tf.glorot_normal_initializer())
-            biasSqueeze = tf.get_variable("biasSqueeze2", [channels], tf.float32, tf.glorot_uniform_initializer())
-            SqueezeFC2 = tf.matmul(SqueezeFC1, WSqueeze, name="SqueezeFC2")
-            SqueezeFC2 = tf.layers.batch_normalization(inputs=SqueezeFC2, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True, scale=True, training=is_training, fused=True)
-            SqueezeFC2 = tf.nn.sigmoid(SqueezeFC2 + biasSqueeze)
-            # Excitation
-            Excitation = tf.reshape(SqueezeFC2, shape=[-1, 1, 1, channels])
-            Scaled = tf.multiply(Excitation, InitialX, name="Scaled")
-            return InitialX + Scaled
+        def SEConvolutionalBlock(name, InitialX, r=16):
+            with tf.variable_scope(name+'SE'):
+                channels = InitialX.shape[-1]
+                # Squeeze block
+                x = tf.nn.avg_pool(InitialX, ksize=[1, InitialX.shape[1], InitialX.shape[2], 1], strides=[1, 1, 1, 1], padding="VALID", name="GlobalAveragePooling")
+                x = tf.reshape(x, [-1, channels], name="GPAFlattened")
+                WSqueeze = tf.get_variable("W1", [x.shape[1], channels // r], tf.float32, tf.glorot_normal_initializer())
+                x = tf.matmul(x, WSqueeze, name="FC1")
+                # biasSqueeze = tf.get_variable("biasSqueeze1", [channels], tf.float32, tf.glorot_uniform_initializer())
+                x = tf.nn.relu(x)
+                x = tf.layers.batch_normalization(inputs=x, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True,
+                                                  scale=True, training=is_training, fused=True)
+                WSqueeze = tf.get_variable("W2", [channels // r, channels], tf.float32, tf.glorot_normal_initializer())
+                # biasSqueeze = tf.get_variable("biasSqueeze2", [channels], tf.float32, tf.glorot_uniform_initializer())
+                x = tf.matmul(x, WSqueeze, name="FC2")
+                x = tf.layers.batch_normalization(inputs=x, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True,
+                                                  scale=True, training=is_training, fused=True)
+                x = tf.nn.sigmoid(x)
+                # Excitation
+                Excitation = tf.reshape(x, shape=[-1, 1, 1, channels])
+                Scaled = tf.multiply(Excitation, InitialX, name="Scaled")
+                return Scaled
 
-        name = 'CONV1'
-        with tf.variable_scope(name):
-            SHAPE = 64
-            if self.DEBUG:
-                SHAPE = 16
-            if self.include_residual:
-                SHAPE = 64
-            # Input: [?, 105, 105, 1], output: [?, 48, 48, 64]
-            W = tf.get_variable('W', [10, 10, 1, SHAPE], tf.float32, tf.keras.initializers.he_normal())
-            b = tf.get_variable('b', [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
-            CONV1 = tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='VALID')
-            CONV1 = tf.layers.batch_normalization(inputs=CONV1, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON,
-                                                  center=True, scale=True, training=is_training, fused=True)
-            CONV1 = tf.nn.max_pool(tf.nn.relu(CONV1 + b), ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
-            self.layer_print(name, x, W, b, CONV1)
+        def CONVBlock(name, conv_in, kernel, channels_out, max_pool=False, padding="VALID", residual=False):
+            with tf.variable_scope(name):
+                W = tf.get_variable('W', [kernel, kernel, x.shape[-1], channels_out], tf.float32, tf.keras.initializers.he_normal())
+                b = tf.get_variable('b', [channels_out], tf.float32, tf.keras.initializers.he_uniform())
+                if not residual:
+                    conv_in = tf.nn.conv2d(conv_in, W, strides=[1, 1, 1, 1], padding=padding)
+                conv_in = tf.layers.batch_normalization(inputs=conv_in, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON,
+                                                        center=True, scale=True, training=is_training, fused=True)
+                conv_in = tf.nn.relu(conv_in + b)
+                # if residual:
+                #     conv_in = tf.nn.conv2d(conv_in, W, strides=[1, 1, 1, 1], padding=padding)
+                if max_pool:
+                    conv_in = tf.nn.max_pool(conv_in, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
+                self.layer_print(name, x, W, b, conv_in)
+                return conv_in
 
-        if self.include_residual:
-            for i in range(5):
-                with tf.variable_scope('CONV1SE_1_' + str(i)):
-                    CONV1 = SEConvolutionalBlock(CONV1)
+        # Input: [?, 105, 105, 1], output: [?, 48, 48, 64]
+        group_channels = 4 if self.DEBUG else 64
+        x = CONVBlock("CONV1", x, 10, group_channels, max_pool=True)
+        y = CONVBlock("CONV1_1_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV1_1_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV1_1_3", y)
+        x = tf.add(x, scaled_y)
 
-        name = 'CONV2'
-        with tf.variable_scope(name):
-            # Input: [?, 48, 48, 64], output: [?, 21, 21, 128]
-            SHAPE = 128
-            if self.DEBUG:
-                SHAPE = 16
-            if self.include_residual:
-                SHAPE = 64
+        x = CONVBlock("CONV1_2_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV1_2_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV1_2_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV1_2_3", y)
+        x = tf.add(x, scaled_y)
 
-            W = tf.get_variable("W", [7, 7, CONV1.shape[-1], SHAPE], tf.float32, tf.keras.initializers.he_normal())
-            b = tf.get_variable("b", [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
-            CONV2 = tf.nn.conv2d(CONV1, W, strides=[1, 1, 1, 1], padding='VALID')
-            CONV2 = tf.layers.batch_normalization(inputs=CONV2, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON,
-                                                  center=True, scale=True, training=is_training, fused=True)
-            CONV2 = tf.nn.max_pool(tf.nn.relu(CONV2 + b), ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
-            self.layer_print(name, CONV1, W, b, CONV2)
+        x = CONVBlock("CONV1_3_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV1_3_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV1_3_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV1_3_3", y)
+        x = tf.add(x, scaled_y)
 
-        if self.include_residual:
-            for i in range(5):
-                with tf.variable_scope('SE_2_' + str(i)):
-                    CONV2 = SEConvolutionalBlock(CONV2)
+        # Input: [?, 48, 48, 64], output: [?, 21, 21, 128]
+        group_channels = 4 if self.DEBUG else 64
+        x = CONVBlock("CONV2_1_1", x, 7, group_channels, max_pool=True)
+        y = CONVBlock("CONV2_1_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV2_1_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV2_1_3", y)
+        x = tf.add(x, scaled_y)
 
-        name = 'CONV3'
-        with tf.variable_scope(name):
-            # Input: [?, 21, 21, 128], output: [?, 9, 9, 128],
-            SHAPE = 128
-            if self.DEBUG:
-                SHAPE = 16
-            if self.include_residual:
-                SHAPE = 64
-            W = tf.get_variable('W', [4, 4, CONV2.shape[-1], SHAPE], tf.float32, tf.keras.initializers.he_normal())
-            b = tf.get_variable('b', [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
-            CONV3 = tf.nn.conv2d(CONV2, W, strides=[1, 1, 1, 1], padding='VALID')
-            CONV3 = tf.layers.batch_normalization(inputs=CONV3, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON,
-                                                  center=True, scale=True, training=is_training, fused=True)
-            CONV3 = tf.nn.max_pool(tf.nn.relu(CONV3 + b), ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
-            self.layer_print(name, CONV2, W, b, CONV3)
+        x = CONVBlock("CONV2_2_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV2_2_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV2_2_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV2_2_3", y)
+        x = tf.add(x, scaled_y)
 
-        if self.include_residual:
-            for i in range(5):
-                with tf.variable_scope('SE_3_' + str(i)):
-                    CONV3 = SEConvolutionalBlock(CONV3)
+        x = CONVBlock("CONV2_3_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV2_3_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV2_3_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV2_3_3", y)
+        x = tf.add(x, scaled_y)
 
-        name = 'CONV4-Flattened'
-        with tf.variable_scope(name):
-            # Input: [?, 9, 9, 128], output: [?, 6, 6, 256],
-            SHAPE = 256
-            if self.DEBUG:
-                SHAPE = 16
-            if self.include_residual:
-                SHAPE = 64
-            W = tf.get_variable('W', [4, 4, CONV3.shape[-1], SHAPE], tf.float32, tf.keras.initializers.he_normal())
-            b = tf.get_variable('b', [SHAPE], tf.float32, tf.keras.initializers.he_uniform())
-            CONV4 = tf.nn.conv2d(CONV3, W, strides=[1, 1, 1, 1], padding='VALID')
-            CONV4 = tf.layers.batch_normalization(inputs=CONV4, axis=-1, momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON,
-                                                  center=True, scale=True, training=is_training, fused=True)
-            CONV4 = tf.nn.relu(CONV4 + b)
-            CONV4_Flattened = tf.reshape(CONV4, [-1, SHAPE * 6 * 6])
-            self.layer_print(name, CONV3, W, b, CONV4)
+        # Input: [?, 21, 21, 128], output: [?, 9, 9, 128]
+        group_channels = 4 if self.DEBUG else 64
+        x = CONVBlock("CONV3_1_1", x, 4, group_channels, max_pool=True)
+        y = CONVBlock("CONV3_1_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV3_1_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV3_1_3", y)
+        x = tf.add(x, scaled_y)
 
+        x = CONVBlock("CONV3_2_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV3_2_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV3_2_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV3_2_3", y)
+        x = tf.add(x, scaled_y)
+
+        x = CONVBlock("CONV3_3_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV3_3_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV3_3_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV3_3_3", y)
+        x = tf.add(x, scaled_y)
+
+        # Input: [?, 9, 9, 128], output: [?, 6, 6, 256],
+        group_channels = 4 if self.DEBUG else 128
+        x = CONVBlock("CONV4_1_1", x, 4, group_channels, max_pool=False)
+        y = CONVBlock("CONV4_1_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV4_1_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV4_1_3", y)
+        x = tf.add(x, scaled_y)
+
+        x = CONVBlock("CONV4_2_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV4_2_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV4_2_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV4_2_3", y)
+        x = tf.add(x, scaled_y)
+
+        x = CONVBlock("CONV4_3_1", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV4_3_2", x, 3, group_channels, padding="SAME")
+        y = CONVBlock("CONV4_3_3", y, 3, group_channels, padding="SAME")
+        scaled_y = SEConvolutionalBlock("CONV4_3_3", y)
+        x = tf.add(x, scaled_y)
+
+        CONV4_Flattened = tf.reshape(x, [-1, x.shape[-1] * 6 * 6])
         name = 'Fully-connected'
         with tf.variable_scope(name):
             # region FC, input: [?, 256 * 6 * 6] = [?, 9216] , output: [?, 4096]
@@ -265,7 +270,7 @@ class SiameseNetwork:
         name = 'FC_Final'
         FCAlpha = tf.get_variable('FCAlpha', [FC1.shape[1], 1], tf.float32, tf.glorot_normal_initializer())
         FC = tf.matmul(tf.abs(tf.subtract(FC1, FC2)), FCAlpha)
-        self.layer_print(name, [FC1, FC2], FCAlpha, None, FC)
+        # self.layer_print(name, [FC1, FC2], FCAlpha, None, FC)
         return FC
 
     def check_verification(self, sess_elements, subset_x, subset_y, subset_num_batches, subset_len, batch_size):
@@ -308,8 +313,7 @@ class SiameseNetwork:
         total_acc = np.sum(np.diagonal(confusion_matrix)) / 400
         return np.around(total_acc, decimals=4)
 
-    def fit(self, starter_learning_rate=0.01, num_epochs=100,
-            batch_size=128, early_stopping=True, optimization_algorithm='Adagrad', WEIGHT_DECAY=0.00005):
+    def fit(self, starter_learning_rate=0.01, num_epochs=100, batch_size=128, early_stopping=True, optimization_algorithm='Adagrad', WEIGHT_DECAY=0.00005):
 
         x1 = tf.placeholder(tf.float32, shape=[None, w, h, 1], name='X1')
         x2 = tf.placeholder(tf.float32, shape=[None, w, h, 1], name='X2')
@@ -409,7 +413,10 @@ class SiameseNetwork:
         sess_elements = [sess, x1, x2, y, tf_is_training, predictions, accuracy, loss]
 
         sess.run(tf.global_variables_initializer())
+        if self.DEBUG:
+            return
         print('Started the session')
+
         if self.RESTORE:
             saver.restore(sess, self.models_folder + '/model.ckpt')
 
@@ -433,7 +440,8 @@ class SiameseNetwork:
             subepoch_loss = subepoch_acc = 0
             dataloader = DataLoader(omniglot_dataset, batch_size=batch_size, shuffle=True, num_workers=1)
             if epoch == -1:
-                num_train_batches = 1
+                continue
+                num_train_batches = 0
                 subepoch = num_subepochs - 1
             else:
                 num_train_batches = len(dataloader)
@@ -452,17 +460,19 @@ class SiameseNetwork:
                 subepoch_acc += acc / num_subepoch_batches
                 subepoch_loss += batch_cost / num_subepoch_batches
 
-                if (i % num_subepoch_batches == 0 and i > 0) or i == num_train_batches - 1 or epoch == -1:
+                if i == num_train_batches - 1 or (i % num_subepoch_batches == 0 and i > 0) or i == num_train_batches - 1 or epoch == -1:
+                    print('Validating')
                     time_now = datetime.now()
                     step = epoch * num_subepochs + subepoch
                     print('Time: {:02}:{:02}, subepoch {}.{}(step {}), loss:{:5.3f}, acc.:{:4.3f};'.format(time_now.hour, time_now.minute, epoch, subepoch,
                                                                                                            step, subepoch_loss, subepoch_acc), end='')
-                    val_acc = self.new_check_one_shot_learning(sess_elements, val_trials, val_trials_len, num_val_trials_batches, batch_size)
+                    if i == num_train_batches - 1:
+                        val_acc = self.new_check_one_shot_learning(sess_elements, val_trials, val_trials_len, num_val_trials_batches, batch_size)
                     print(' validation acc.: {:4.3f}/{:4.3f} (best on step {:2})'.format(val_acc, top_val_acc, top_val_acc_step), end='')
 
                     if val_acc > top_val_acc + 0.001:
                         top_val_acc, top_val_acc_step = val_acc, step
-                        eval_acc = self.new_check_one_shot_learning(sess_elements, eval_trials, eval_trials_len, num_eval_trials_batches, batch_size)
+                        # eval_acc = self.new_check_one_shot_learning(sess_elements, eval_trials, eval_trials_len, num_eval_trials_batches, batch_size)
                         print(' Highest! EvalAcc.: {:4.3f}'.format(eval_acc))
                         saver.save(sess, os.path.join(self.models_folder, 'model.ckpt'))
                         params['learning_rate'] = float(sess.run(learning_rate))
@@ -497,8 +507,7 @@ class SiameseNetwork:
 
 
 if __name__ == '__main__':
-
-    mySiameseNetwork = SiameseNetwork(DEBUG=False, back_pairs_amount=150000, AUGMENT=True)
+    mySiameseNetwork = SiameseNetwork(DEBUG=False, back_pairs_amount=90000, AUGMENT=True, restore_models_folder='05-10 09-28-48 90Kx9')
     # mySiameseNetwork.include_residual = True
-    mySiameseNetwork.fit(starter_learning_rate=0.01, num_epochs=100, batch_size=128, optimization_algorithm='Adadelta')
+    mySiameseNetwork.fit(starter_learning_rate=0.01, num_epochs=100, batch_size=128, optimization_algorithm='Adagrad', WEIGHT_DECAY=0.00005)
     del mySiameseNetwork

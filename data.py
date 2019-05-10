@@ -135,7 +135,7 @@ def generate_image_pairs(images_dict, pairs_amount, ceil, path_only=False, exclu
         for alphabet in images_dict:
             characters = images_dict[alphabet].keys()
             for character in characters:
-                for image in np.random.choice(list(images_dict[alphabet][character]), size=(20 - ceil)):
+                for image in np.random.choice(list(images_dict[alphabet][character]), size=(20 - ceil), replace=False):
                     images_dict[alphabet][character].pop(image, None)
         print('Excluded {} images for every character'.format(20 - ceil))
 
@@ -257,7 +257,7 @@ def augment_int_image(oldimage, borderValue):
     image = oldimage.copy()
     image = image.reshape(105, 105)
     a = np.random.choice([0, 1], size=7)
-    theta = a[0] * np.random.randint(-15, 15)
+    theta = a[0] * np.random.randint(-10, 10)
     M = cv2.getRotationMatrix2D((105 / 2, 105 / 2), theta, 1)
     image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=borderValue)
     M = np.float32([[1, 0, 0],
