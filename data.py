@@ -3,39 +3,41 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import itertools
-import _pickle as cPickle
+import _pickle
 import json
+
+from torch.utils.data import Dataset, DataLoader
 
 
 def pickle_it(data, path):
     """
-    Сохранить данные в pickle файл
+    Save data to pickle file
 
-    :param data: данные, класс, массив объектов
-    :param path: путь до итогового файла
+    :param data: data, class, array of objects
+    :param path: full path to new file
     :return:
     """
     with open(path, 'wb') as f:
-        cPickle.dump(data, f, protocol=4)
+        _pickle.dump(data, f, protocol=4)
 
 
 def unpickle_it(path):
     """
-    Достать данные из pickle файла
+    Get data from pickle file
 
-    :param path: путь до файла с данными
+    :param path: full path to file with data
     :return:
     """
     with open(path, 'rb') as f:
-        return cPickle.load(f)
+        return _pickle.load(f)
 
 
 def json_it(data, path):
     """
-    Сохранить данные data в json файл
+    Save data to json file
 
-    :param data: данные, класс, массив объектов
-    :param path: путь до итогового файла
+    :param data: data, class, array of objects
+    :param path: full path to new file
     :return:
     """
     with open(path, 'w', encoding='utf-8') as f:
@@ -44,9 +46,9 @@ def json_it(data, path):
 
 def unjson_it(path):
     """
-    Достать данные из json файла
+    Get data from json file
 
-    :param path: путь до файла с данными
+    :param path: full path to file with data
     :return:
     """
     with open(path, 'r', encoding='utf-8') as f:
@@ -84,9 +86,9 @@ def load_image_dict(ROOT, subdataset_path, subdataset_name, clear=False):
                            'Manipuri', 'Old_Church_Slavonic_(Cyrillic)', 'Tengwar', 'Tibetan')
 
     pkl_file = os.path.join(ROOT, 'Data', subdataset_name + '.pkl')
-    print('Trying to load ', pkl_file)
+    # print('Trying to load ', pkl_file)
     if os.path.exists(pkl_file):
-        print(pkl_file, ' already exists, loading to memory.')
+        # print(pkl_file, ' already exists, loading to memory.')
         images_dict = unpickle_it(pkl_file)
     else:
         subdataset_path = os.path.join(ROOT, subdataset_path)
@@ -106,26 +108,29 @@ def load_image_dict(ROOT, subdataset_path, subdataset_name, clear=False):
         pickle_it(images_dict, pkl_file)
 
     if clear:
-        print('Deleting alphabets from ', subdataset_name)
+        # print('Deleting alphabets from ', subdataset_name)
         for alphabet in sorted(list(images_dict)):
             if alphabet in resticted_alpahbets:
-                print('-->Minus alphabet', alphabet)
+                # print('-->Minus alphabet', alphabet)
                 images_dict.pop(alphabet, None)
     else:
-        print('No excluded alphabets for ', subdataset_name)
+        pass
+        # print('No excluded alphabets for ', subdataset_name)
     return images_dict
 
 
 def generate_image_pairs(images_dict, pairs_amount, ceil, path_only=False, exclude=True):
-    '''
+    """
+    Method generates array of image pairs basically for verification train/validation.
 
     :param pairs_amount:
     :param images_dict:
     :param ceil: due to selection in article
     :param seed: random seed fixed for experiments handling
+    :param path_only
+    :param exclude
     :return:
-    '''
-    # np.random.seed(seed)
+    """
 
     alphabets_amount = len(images_dict.keys())
     alphabet_all_pairs = pairs_amount // alphabets_amount
@@ -135,9 +140,9 @@ def generate_image_pairs(images_dict, pairs_amount, ceil, path_only=False, exclu
         for alphabet in images_dict:
             characters = images_dict[alphabet].keys()
             for character in characters:
-                for image in np.random.choice(list(images_dict[alphabet][character]), size=(20 - ceil)):
+                for image in np.random.choice(list(images_dict[alphabet][character]), size=(20 - ceil), replace=False):
                     images_dict[alphabet][character].pop(image, None)
-        print('Excluded {} images for every character'.format(20 - ceil))
+        # print('Excluded {} images for every character'.format(20 - ceil))
 
     equal_pairs = []
     distinct_pairs = []
@@ -146,21 +151,21 @@ def generate_image_pairs(images_dict, pairs_amount, ceil, path_only=False, exclu
         current_alphabet_equal_pairs = []
         characters = images_dict[alphabet].keys()
         for character in characters:
-            current_character_images = []
+            character_images = []
             for image in np.random.choice(list(images_dict[alphabet][character]), size=ceil):
-                current_character_images.append([alphabet, character, image])
+                character_images.append([alphabet, character, image])
 
             # Select combinations('ABCD', 2): AB AC AD BC BD CD
             # List all combinations of the characters
-            current_character_equal_pairs = list(itertools.combinations(current_character_images, 2))
+            current_character_equal_pairs = list(itertools.combinations(character_images, 2))
             current_alphabet_equal_pairs.extend(current_character_equal_pairs)
 
         # Equal pairs
         replace = len(current_alphabet_equal_pairs) < alphabet_equal_pairs_needed_amount
-        randomly_chosen_equal_pairs_numbers = np.random.choice(len(current_alphabet_equal_pairs),
-                                                               size=alphabet_equal_pairs_needed_amount,
-                                                               replace=replace)
-        for i in randomly_chosen_equal_pairs_numbers:
+        equal_pairs_numbers = np.random.choice(len(current_alphabet_equal_pairs),
+                                               size=alphabet_equal_pairs_needed_amount,
+                                               replace=replace)
+        for i in equal_pairs_numbers:
             entry1, entry2 = current_alphabet_equal_pairs[i]
 
             if path_only:
@@ -192,17 +197,12 @@ def generate_image_pairs(images_dict, pairs_amount, ceil, path_only=False, exclu
             else:
                 image1 = images_dict[alphabet][character1][key1]
                 image2 = images_dict[alphabet][character2][key2]
-                # image1 = list(images_dict[alphabet][character1].values())[np.random.randint(ceil)]
-                # image2 = list(images_dict[alphabet][character2].values())[np.random.randint(ceil)]
                 distinct_pairs.append([image1, image2])
 
     amount_equal_pairs = len(equal_pairs)
     amount_distinct_pairs = len(distinct_pairs)
-    print('Amount of equal_pairs:', amount_equal_pairs, ' and different_pairs:', amount_distinct_pairs)
+    # print('Amount of equal_pairs:', amount_equal_pairs, ' and different_pairs:', amount_distinct_pairs)
     all_pairs_types = np.concatenate((np.ones(amount_equal_pairs), np.zeros(amount_distinct_pairs))).reshape(-1, 1).astype(np.float32)
-
-    # old way
-    # all_pairs_images = np.array(equal_pairs + distinct_pairs).reshape(amount_equal_pairs + amount_distinct_pairs, 2, 105, 105, 1)
 
     equal_pairs.extend(distinct_pairs)
     all_pairs_images = equal_pairs
@@ -210,21 +210,20 @@ def generate_image_pairs(images_dict, pairs_amount, ceil, path_only=False, exclu
 
     if not path_only:
         all_pairs_images = np.expand_dims(np.array(all_pairs_images), axis=-1)
-        print('Loading images array with shape: ', all_pairs_images.shape)
+        # print('Loading images array with shape: ', all_pairs_images.shape)
 
     return all_pairs_images, all_pairs_types
 
 
 def generate_one_shot_trials(images_dict):
     """
-    Method generates one-shot trials for classification by verification in dictionary structure.
+    Method generates one-shot trials single array to iterate through and calculate accuracy
 
     :param images_dict: None or dictionary of next structure:
     :param subdataset: path to the subdataset folder
     :param seed: random seed to repeat the experiment
-    :return: 400 one-shot trial dictionary of next structure:
+    :return: 400 one-shot trials result in 8000 pairs
     """
-    # np.random.seed(seed)
 
     all_comparisons_list = []
     # all_comparisons_answers_list = []
@@ -249,103 +248,77 @@ def generate_one_shot_trials(images_dict):
                     # all_comparisons_answers_list.append(i == j)
 
     all_comparisons_array = np.array(all_comparisons_list).reshape((8000, 2, 105, 105, 1))
-    print('Validation one-shot learning array shape: ', all_comparisons_array.shape)
+    # print('Validation one-shot learning array shape: ', all_comparisons_array.shape)
     return all_comparisons_array  # , all_comparisons_answers_list
 
 
 def augment_int_image(oldimage, borderValue):
     image = oldimage.copy()
     image = image.reshape(105, 105)
-    a = np.random.choice([0, 1], size=7)
-    theta = a[0] * np.random.randint(-15, 15)
-    M = cv2.getRotationMatrix2D((105 / 2, 105 / 2), theta, 1)
-    image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=borderValue)
+    # Choose transformations
+    transforms = np.random.choice([0, 1], size=7)
+    # Rotation, theta in [-10, 10]
+    if transforms[0]:
+        M = cv2.getRotationMatrix2D(center=(105 / 2, 105 / 2), angle=np.random.randint(-15, 16), scale=1)
+        image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=borderValue)
+
+    # Create matrix in order to fill separate values
     M = np.float32([[1, 0, 0],
                     [0, 1, 0]])
+
     # Shearing: ρx, ρy ∈ [−0.3, 0.3] in rad -> [-0.3 * 180 / math.pi, 0.3 * 180 / math.pi] in angles
-    rad = a[1] * np.random.randint(-3, 4) / 10
-    M[0, 1] = -np.sin(rad)
-    rad = a[2] * np.random.randint(-3, 4) / 10
-    M[1, 1] = np.cos(rad)
-    # # Translation: tx, ty ∈ [−2, 2]
-    M[0, 2] = a[5] * np.random.randint(-4, 5)
-    M[1, 2] = a[6] * np.random.randint(-4, 5)
+    M[0, 1] = -np.sin(np.random.randint(-3, 4) / 10) if transforms[1] else M[0, 1]
+    M[1, 1] = np.cos(np.random.randint(-3, 4) / 10) if transforms[2] else M[1, 1]
+
+    # Translation: tx, ty ∈ [−2, 2]
+    M[0, 2] = np.random.randint(-4, 5) if transforms[3] else M[0, 2]
+    M[1, 2] = np.random.randint(-4, 5) if transforms[4] else M[1, 2]
+
     # # Scaling: sx, sy ∈ [0.8, 1.2]
-    M[0, 0] = a[3] * np.random.randint(8, 13) / 10 + (1 - a[3])
-    M[1, 1] = a[4] * np.random.randint(8, 13) / 10 + (1 - a[4])
-    image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=borderValue)  # > 0
+    M[0, 0] = np.random.randint(8, 13) / 10 if transforms[5] else M[0, 0]
+    M[1, 1] = np.random.randint(8, 13) / 10 if transforms[6] else M[1, 1]
+
+    # Perform all the transforms in one
+    image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=borderValue)
     return image
 
 
-def augment_train_images_float(train_pairs_images, train_pairs_types, DEBUG_AUGMENTING=False):
-    initial_train_len = len(train_pairs_types)
-    # (θ, ρx, ρy, sx, sy, tx, tx)
-    train_pairs_images = np.squeeze(train_pairs_images)
-    new_train_pairs_images = []
-    new_train_pairs_types = []
-    for _ in range(7):
-        for i in range(initial_train_len):
-            new_pair = []
-            for image in train_pairs_images[i]:
-                a = np.random.choice([1], size=7)
-                image = image.copy()
-                # Rotation: θ ∈ [−10.0, 10.0]
-                theta = a[0] * np.random.randint(-10, 10)
-                M = cv2.getRotationMatrix2D((105 / 2, 105 / 2), theta, 1)
-                image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=1.0)
-                M = np.float32([[1, 0, 0],
-                                [0, 1, 0]])
-                # Shearing: ρx, ρy ∈ [−0.3, 0.3] in rad -> [-0.3 * 180 / math.pi, 0.3 * 180 / math.pi] in angles
-                rad = a[1] * np.random.randint(-2, 2) / 10
-                M[0, 1] = -np.sin(rad)
-                rad = a[2] * np.random.randint(-2, 2) / 10
-                M[1, 1] = np.cos(rad)
-                # Translation: tx, ty ∈ [−2, 2]
-                M[0, 2] = a[5] * np.random.randint(-2, 2)
-                M[1, 2] = a[6] * np.random.randint(-2, 2)
-                # Scaling: sx, sy ∈ [0.8, 1.2]
-                M[0, 0] = a[3] * np.random.randint(8, 10) / 10 + (1 - a[3])
-                M[1, 1] = a[4] * np.random.randint(8, 10) / 10 + (1 - a[4])
-                image = cv2.warpAffine(image, M, (105, 105), borderMode=cv2.BORDER_CONSTANT, borderValue=1.0)  # > 0
-                new_pair.append(image)
+class OmniglotDataset(Dataset):
+    def __init__(self, chosen_pairs_np_array, chosen_pairs_answers_np_array, background_images_dict, pairs_amount, augment):
+        assert pairs_amount == len(chosen_pairs_answers_np_array) == len(chosen_pairs_np_array), 'Incorrect pairs sizes'
+        self.pairs = chosen_pairs_np_array
+        self.pairs_answers = chosen_pairs_answers_np_array
+        self.pairs_amount = pairs_amount
+        self.background_images_dict = background_images_dict
+        self.augment = augment
+        self.total_pairs_amount = pairs_amount
+        if augment:
+            self.total_pairs_amount = 9 * pairs_amount
 
-            if DEBUG_AUGMENTING:
-                fig, ax = plt.subplots(2, 2, figsize=(5, 5))
-                # image0 = np.array(255 * (train_pairs_images[i][0] + 1) / 2).astype(np.uint8).reshape(105, 105)
-                # image1 = np.array(255 * (train_pairs_images[i][1] + 1) / 2).astype(np.uint8).reshape(105, 105)
-                # image2 = np.array(255 * (new_pair[0] + 1) / 2).astype(np.uint8).reshape(105, 105)
-                # image3 = np.array(255 * (new_pair[1] + 1) / 2).astype(np.uint8).reshape(105, 105)
+    def __len__(self):
+        return self.total_pairs_amount
 
-                image0 = train_pairs_images[i][0]
-                image1 = train_pairs_images[i][1]
-                image2 = new_pair[0]
-                image3 = new_pair[1]
+    def __getitem__(self, item):
+        real_item = item % self.pairs_amount
 
-                ax[0, 0].imshow(image0, cmap='gray')
-                ax[0, 1].imshow(image1, cmap='gray')
-                ax[1, 0].imshow(image2, cmap='gray')
-                ax[1, 1].imshow(image3, cmap='gray')
-                for k in range(2):
-                    for l in range(2):
-                        ax[k, l].set_xticks([])
-                        ax[k, l].set_yticks([])
-                plt.show()
-            new_train_pairs_images.append(new_pair)
-            new_train_pairs_types.append(train_pairs_types[i])
+        entry1, entry2 = self.pairs[real_item]
+        alphabet, character1, image_name1 = entry1
+        image1 = self.background_images_dict[alphabet][character1][image_name1]
+        alphabet, character2, image_name2 = entry2
+        image2 = self.background_images_dict[alphabet][character2][image_name2]
 
-    # print('Shape before: ', train_pairs_images.shape)
-    train_pairs_images = np.expand_dims(np.vstack((train_pairs_images, new_train_pairs_images)), axis=-1)
-    # print('Shape after: ', train_pairs_images.shape)
-    train_pairs_types = np.concatenate((train_pairs_types, new_train_pairs_types))
-    # print('Pairs amount: ', len(train_pairs_images), ' and ', len(train_pairs_types))
-    return train_pairs_images, train_pairs_types
+        # One time real images, others - augmented if it is enabled
+        if item > self.pairs_amount:
+            image1 = augment_int_image(image1, borderValue=255)
+            image2 = augment_int_image(image2, borderValue=255)
 
+        pair = (np.array([image1, image2], dtype=np.float32) - 127.5) / 127.5
+        sample = {
+            'pair': pair.reshape(2, 105, 105, 1),
+            'pairType': self.pairs_answers[real_item]
+        }
+        return sample
 
-# back_images_dict = load_image_dict('C:/Users/Art/PycharmProjects/Diploma', 'images/images_background', 'images_background')
-# train_pairs_images, train_pairs_types = generate_image_pairs(images_dict=back_images_dict, pairs_amount=300, ceil=12, seed=0)
-# train_pairs_images = (train_pairs_images.astype(np.float32) - 127.5) / 127.5
-# train_pairs_images, train_pairs_types = augment_train_images_float(train_pairs_images, train_pairs_types, DEBUG_AUGMENTING=True)
-#
 
 def show_pairs(pairs_images, pairs_types, limit=10):
     fig, a = plt.subplots(limit, 2, figsize=(10, 5))
@@ -361,75 +334,83 @@ def show_pairs(pairs_images, pairs_types, limit=10):
     plt.show()
 
 
+def show_augmentation(dataloader):
+    for i, batch in enumerate(dataloader, 0):
+        batch_images = batch['pair'].numpy()
+        for j in range(32):
+            # print('Showing ', i, ' ', j)
+            a = np.reshape(batch_images[j][0], newshape=(105, 105))
+            b = augment_int_image(a, borderValue=1)
+            a[:, -2:] = -1
+            image = np.hstack((a, b))
+            plt.imshow(image, cmap='gray')
+            plt.xticks([])
+            plt.yticks([])
+            plt.show()
+
+
 def get_eval_trials(root_path):
     all_comparisons, all_comparisons_answers = unpickle_it(os.path.join(root_path, 'Data/all_runs_trials.pkl'))
     return all_comparisons
 
-# def show_dataset():
-#     for i in range(len(omniglot_dataset)):
-#         sample = omniglot_dataset[i]
-#         pair = sample['pair']
-#         image1, image2 = pair[0].reshape(105, 105), pair[1].reshape(105, 105)
-#         # image1, image2 = pair[0][0].reshape(105, 105), pair[0][1].reshape(105, 105)
-#         pairType = int(sample['pairType'])
-#         print(i, image1.shape, image2.shape, pairType)
-#         fig, ax = plt.subplots(1, 2, figsize=(5, 5))
-#         ax[0].imshow(image1, cmap='gray')
-#         ax[1].imshow(image2, cmap='gray')
-#         plt.suptitle('Sample #{}'.format(pairType))
-#         plt.show()
-#
-# def show_dataloader(show=False):
-#     dataloader_length = 0
-#
-#     sess = tf.Session()
-#     writer = tf.summary.FileWriter('./logs', sess.graph)
-#
-#     for i_batch, sample_batched in enumerate(dataloader, 0):
-#         batch_images = sample_batched['pair'].numpy()
-#         batch_types = sample_batched['pairType'].numpy().astype(np.float32)
-#
-#         dataloader_length += len(batch_images)
-#         print(i_batch, len(batch_images), dataloader_length, sep=' ')
-#
-#         if show:
-#             for j in range(dataloader.batch_size):
-#                 pair = batch_images[j]
-#                 pairType = int(batch_types[j])
-#                 image1, image2 = pair[0].reshape(105, 105), pair[1].reshape(105, 105)
-#                 # print(j, image1.shape, image2.shape, pairType)
-#                 # fig, ax = plt.subplots(1, 2, figsize=(5, 5))
-#                 # ax[0].imshow(image1, cmap='gray')
-#                 # ax[1].imshow(image2, cmap='gray')
-#                 # plt.suptitle('Batch {}, num {}, sample #{}'.format(i_batch, j, pairType))
-#                 # # plt.savefig('Image.png')
-#                 # plt.show()
-#                 image = np.array((np.concatenate([image1, image2], axis=1) * 127.5) + 127.5, dtype=np.uint8).reshape(1, 105, 210, 1)
-#                 import cv2
-#                 image = cv2.putText(image, str(bool(pairType)), (5, 100), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1.0, color=0,
-#                                     thickness=2, lineType=cv2.LINE_AA)
-#                 summary_op = tf.summary.image("Plots/Images", image)
-#                 summary = sess.run(summary_op)
-#                 writer.add_summary(summary, j)
-#
-#                 if j == 10:
-#                     break
-#             break
-#     writer.close()
-#     print(dataloader_length)
+
+def show_dataset(omniglot_dataset):
+    for i in range(len(omniglot_dataset)):
+        sample = omniglot_dataset[i]
+        pair = sample['pair']
+        image1, image2 = pair[0].reshape(105, 105), pair[1].reshape(105, 105)
+        # image1, image2 = pair[0][0].reshape(105, 105), pair[0][1].reshape(105, 105)
+        pairType = int(sample['pairType'])
+        print(i, image1.shape, image2.shape, pairType)
+        fig, ax = plt.subplots(1, 2, figsize=(5, 5))
+        ax[0].imshow(image1, cmap='gray')
+        ax[1].imshow(image2, cmap='gray')
+        plt.suptitle('Sample #{}'.format(pairType))
+        plt.show()
 
 
-# different = np.nonzero(batch_predictions_labels != batch_types)[0]
-#                     if len(different) != 0:
-#                         r = np.random.choice(different)
-#                         pair = batch_images[r]
-#                         pairType = bool(batch_types[r])
-#                         image1, image2 = pair[0].reshape(105, 105), pair[1].reshape(105, 105)
-#                         image = np.array((np.concatenate([image1, image2], axis=1) * 127.5) + 127.5, dtype=np.uint8).reshape(105, 210)
-#                         text = '{:02}/{:02}: {}'.format(epoch, i, 'Equal' if bool(pairType) else 'Different')
-#                         # print('Added image, text:', text)
-#                         image = cv2.resize(image, (100, 50))
-#                         image = cv2.putText(image, text, (5, 45), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.2, color=0, thickness=1, lineType=cv2.LINE_AA)
-#                         image = image.reshape(1, 50, 100, 1)
-#                         image_summary = sess.run(tf.summary.image('{}/{}'.format(epoch, i), image))
-#                         summary_writer.add_summary(image_summary, epoch)  # summary_writer.add_summary(image_summary, i + num_train_batches * epoch)
+def utilize_tensorboard_image(dataloader, show=False):
+    dataloader_length = 0
+    import tensorflow as tf
+
+    sess = tf.Session()
+    writer = tf.summary.FileWriter('Images/TensorboardImages/logs', sess.graph)
+
+    for i_batch, sample_batched in enumerate(dataloader, 0):
+        batch_images = sample_batched['pair'].numpy()
+        batch_types = sample_batched['pairType'].numpy().astype(np.float32)
+
+        dataloader_length += len(batch_images)
+        print(i_batch, len(batch_images), dataloader_length, sep=' ')
+
+        if show:
+            for j in range(dataloader.batch_size):
+                pair = batch_images[j]
+                pairType = int(batch_types[j])
+                image1, image2 = pair[0].reshape(105, 105), pair[1].reshape(105, 105)
+                # Stack horizontally and put meta info text
+                image = np.array((np.concatenate([image1, image2], axis=1) * 127.5) + 127.5, dtype=np.uint8).reshape(1, 105, 210, 1)
+                image = cv2.putText(image, str(bool(pairType)), (5, 100), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1.0, color=0,
+                                    thickness=2, lineType=cv2.LINE_AA)
+                summary_op = tf.summary.image("Plots/Images", image)
+                summary = sess.run(summary_op)
+                writer.add_summary(summary, j)
+
+                if j == 10:
+                    break
+            break
+    writer.close()
+    print(dataloader_length)
+
+
+if __name__ == '__main__':
+    back_pairs_amount = 3000
+    back_images_dict = load_image_dict('', 'images/images_background', 'images_background')
+    train_pairs_images, train_pairs_types = generate_image_pairs(images_dict=back_images_dict, pairs_amount=back_pairs_amount, ceil=12, path_only=True)
+    omniglot_dataset = OmniglotDataset(train_pairs_images, train_pairs_types, back_images_dict, back_pairs_amount, augment=False)
+
+    print('Omniglot dataset length: (must be equal to image pairs or x9 if augmentation provided)', len(omniglot_dataset))
+    show_dataset(omniglot_dataset)
+
+    dataloader = DataLoader(omniglot_dataset, batch_size=32, shuffle=True, num_workers=1)
+    utilize_tensorboard_image(dataloader)
