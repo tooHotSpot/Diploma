@@ -1,10 +1,10 @@
 """
-This implementation uses one-shot learning validation
+This implementation uses one-shot learning validation.
 """
 
 import os
 import data
-
+from tqdm import tqdm
 import numpy as np
 from datetime import datetime
 
@@ -19,11 +19,10 @@ from model import SiameseNetwork
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
-ops.reset_default_graph()
 config = tf.ConfigProto(log_device_placement=False)
-# Enable first or second
+# config.gpu_options.per_process_gpu_memory_fraction = 0.95
 config.gpu_options.allow_growth = True
-# config.gpu_options.per_process_gpu_memory_fraction = 0.8
+ops.reset_default_graph()
 sess = tf.Session(config=config)
 
 
@@ -35,11 +34,16 @@ class Network(SiameseNetwork):
     restore = False
 
     def __init__(self, debug, verbose, back_pairs_amount, augment, restore_models_folder=None, root_folder='/ssd480/amal/Siamese',
-                 starter_learning_rate=0.01, batch_size=128, early_stopping=True, optimization_algorithm='Adagrad', weight_decay=0.00005, lr_decay=0.5):
+                 starter_learning_rate=0.01, batch_size=128, early_stopping=True, optimization_algorithm='Adagrad', weight_decay=0.00005,
+                 lr_decay=0.05, implementation='base', ceil=12):
         super(Network, self).__init__(debug=debug, verbose=verbose)
+
         self.augment = augment
         self.root_folder = root_folder
+        self.ceil = ceil
         self.back_pairs_amount = back_pairs_amount
+        self.implementation = implementation
+        folder = ('se_' if implementation == 'SE' else '') + 'models'
 
         if not os.path.exists(self.root_folder):
             print(self.root_folder, ' path not exists as root path')
@@ -47,15 +51,21 @@ class Network(SiameseNetwork):
 
         if restore_models_folder is not None:
             self.restore = True
-            print('Trying to restore from the ', restore_models_folder, end='...')
-            restore_models_folder = os.path.join(self.root_folder, 'models', restore_models_folder)
+            print('Trying to restore from the ', restore_models_folder, '...')
+            restore_models_folder = os.path.join(self.root_folder, folder, restore_models_folder)
             assert os.path.exists(restore_models_folder) and len(os.listdir(restore_models_folder)) != 0, \
                 print(restore_models_folder, ' does not exist or empty')
             self.models_folder = restore_models_folder
+            # Add params reading on restore
         else:
             b = datetime.now()
             tmp = '{:02}-{:02} {:02}-{:02}-{:02} {}{}'.format(b.month, b.day, b.hour, b.minute, b.second, back_pairs_amount // 1000, ('Kx9' if self.augment else 'K'))
-            tmp += '_{:.2f}_{}_B{}_{:.5f}_{:.2f}_{}'.format(starter_learning_rate, optimization_algorithm, batch_size, weight_decay, lr_decay, 'ES' if early_stopping else '')
+            tmp += '_{}_{}_B{}_{}_{:.2f}_{}'.format(starter_learning_rate, optimization_algorithm, batch_size, weight_decay, lr_decay, 'ES' if early_stopping else '')
+            if implementation == 'SE':
+                tmp += '_SE'
+            if ceil != 12:
+                tmp += '_C{}'.format(ceil)
+
             self.starter_learning_rate = starter_learning_rate
             self.back_pairs_amount = back_pairs_amount
             self.batch_size = batch_size
@@ -64,15 +74,15 @@ class Network(SiameseNetwork):
             self.weight_decay = weight_decay
             self.lr_decay = lr_decay
 
-            self.models_folder = os.path.join(self.root_folder, 'models', tmp)
+            self.models_folder = os.path.join(self.root_folder, folder, tmp)
             if not os.path.exists(self.models_folder):
                 os.makedirs(self.models_folder)
 
         print('Models folder: ', self.models_folder)
         self.logs_path = os.path.join(self.models_folder, 'logs')
 
-        local_device_protos = device_lib.list_local_devices()
-        print('Listing available devices: ', [x.name for x in local_device_protos])
+        # local_device_protos = device_lib.list_local_devices()
+        # print('Listing available devices: ', [x.name for x in local_device_protos])
 
     def check_verification(self, sess_elements, subset_x, subset_y, subset_num_batches, subset_len, batch_size):
         print('')
@@ -96,6 +106,7 @@ class Network(SiameseNetwork):
         sess, x1, x2, y, tf_is_training, predictions, accuracy, loss = sess_elements
         confusion_matrix = np.zeros((20, 20))
         pred = []
+
         for i in range(trials_num_batches):
             left, right = i * batch_size, min((i + 1) * batch_size, trials_len)
             feed_dict = {
@@ -103,7 +114,8 @@ class Network(SiameseNetwork):
                 x2: trials[left:right, 1, :, :],
                 tf_is_training: False
             }
-            pred.extend(sess.run(tf.sigmoid(sess.run(predictions, feed_dict))))
+            # pred.extend(sess.run(tf.sigmoid(sess.run(predictions, feed_dict))))
+            pred.extend(sess.run(self.sigmoid_operation, feed_dict))
 
         pred = np.array(pred).reshape(-1, 20)
         pred = np.argmax(pred, axis=-1).reshape(-1).astype(int)
@@ -121,27 +133,34 @@ class Network(SiameseNetwork):
         y = tf.placeholder(tf.float32, shape=[None, 1], name='Y')
         tf_is_training = tf.placeholder(tf.bool)
 
-        predictions = self.model(x1, x2, tf_is_training)
-        predictions_labels = tf.round(tf.sigmoid(predictions))
+        predictions = self.model(x1, x2, tf_is_training, self.implementation)
+        self.sigmoid_operation = tf.sigmoid(predictions)
+        predictions_labels = tf.round(self.sigmoid_operation)
         accuracy = tf.reduce_mean(tf.cast(tf.equal(predictions_labels, y), tf.float32))
 
         back_pairs_amount = self.back_pairs_amount
         back_images_dict = data.load_image_dict(self.root_folder, 'images/images_background', 'images_background')
-        batch_size = self.batch_size
 
         # region Data
         if self.restore:
             train_pairs_images, train_pairs_types = data.unpickle_it(os.path.join(self.models_folder, 'train_pairs.pkl'))
             val_trials = data.unpickle_it(os.path.join(self.models_folder, 'val_trials.pkl'))
             params = data.unpickle_it(os.path.join(self.models_folder, 'params.json'))
+            self.batch_size = params['batch_size']
+            self.weight_decay = params['weight_decay']
+            self.starter_learning_rate = params['starter_learning_rate']
+            self.lr_decay = params['lr_decay']
+            self.optimization_algorithm = params['optimization_algorithm']
+            self.early_stopping = params['early_stopping']
         else:
-            train_pairs_images, train_pairs_types = data.generate_image_pairs(images_dict=back_images_dict, pairs_amount=back_pairs_amount, ceil=12, path_only=True)
+            train_pairs_images, train_pairs_types = data.generate_image_pairs(images_dict=back_images_dict, pairs_amount=back_pairs_amount, ceil=self.ceil, path_only=True)
             data.pickle_it([train_pairs_images, train_pairs_types], os.path.join(self.models_folder, 'train_pairs.pkl'))
-            params = {'starter_learning_rate': self.starter_learning_rate, 'learning_rate': self.starter_learning_rate, 'batch_size': batch_size,
+            params = {'starter_learning_rate': self.starter_learning_rate, 'learning_rate': self.starter_learning_rate, 'batch_size': self.batch_size,
                       'optimization_algorithm': self.optimization_algorithm, 'early_stopping': self.early_stopping, 'early_stopping_limit': (45 if self.augment else 20),
                       'weight_decay': self.weight_decay, 'last_epoch': -1, 'last_subepoch': 0, 'num_epochs': num_epochs, 'augment': self.augment,
                       'back_pairs_amount': back_pairs_amount, 'val_acc': 0, 'top_val_acc': 0, 'top_val_acc_step': -1, 'eval_acc': 0, 'lr_decay': self.lr_decay,
-                      'timestamp': '{:02}:{:02}'.format(datetime.now().hour, datetime.now().minute)}
+                      'timestamp': '{:02}:{:02}'.format(datetime.now().hour, datetime.now().minute),
+                      'implementation': self.implementation}
             data.pickle_it(params, os.path.join(self.models_folder, 'params.json'))
 
             validation_images_dict = data.load_image_dict(self.root_folder, 'images/images_evaluation', 'images_evaluation', clear=True)
@@ -149,12 +168,12 @@ class Network(SiameseNetwork):
             data.pickle_it(val_trials, os.path.join(self.models_folder, 'val_trials.pkl'))
             del validation_images_dict
 
-        omniglot_dataset = data.OmniglotDataset(train_pairs_images, train_pairs_types, back_images_dict, back_pairs_amount, self.augment)
+        omniglot_dataset = data.OmniglotDataset(train_pairs_images, train_pairs_types, back_images_dict, back_pairs_amount, self.augment, )
         # print('Omniglot dataset length: (must be equal to image pairs or x9 if augmentation provided)', len(omniglot_dataset))
 
+        batch_size = self.batch_size
         num_train_batches = (len(omniglot_dataset) + batch_size - 1) // batch_size
         num_subepoch_batches = (back_pairs_amount + batch_size - 1) // batch_size
-        # print('Amount of training batches {}, amount subepoch batches: {}'.format(num_train_batches, num_subepoch_batches))
         del back_images_dict, train_pairs_images, train_pairs_types
 
         val_trials_len = len(val_trials)
@@ -164,7 +183,7 @@ class Network(SiameseNetwork):
         eval_trials_len = len(eval_trials)
         eval_trials = (eval_trials.astype(np.float32) - 127.5) / 127.5
         num_val_trials_batches, num_eval_trials_batches = (np.array([val_trials_len, eval_trials_len]) + batch_size - 1) // batch_size
-        # print('Amount of validation [{}] & test [{}] one-shot classification batches'.format(num_val_trials_batches, num_eval_trials_batches))
+        print('Amount of batches: {} training, {} subepoch, {} validation '.format(num_train_batches, num_subepoch_batches, num_val_trials_batches))
         # endregion
         # region TFUtils
 
@@ -183,7 +202,10 @@ class Network(SiameseNetwork):
         optimization_algorithm_dict = {
             'Adagrad': tf.train.AdagradOptimizer(learning_rate=learning_rate),
             'Momentum': tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.5),
-            'Adadelta': tf.train.AdadeltaOptimizer(learning_rate=learning_rate)
+            'Adadelta': tf.train.AdadeltaOptimizer(learning_rate=learning_rate),
+            # Have not checked yet
+            'Adam': tf.train.AdamOptimizer(learning_rate=learning_rate),
+            'AdagradDA': tf.train.AdagradDAOptimizer(learning_rate=learning_rate, global_step=global_step)
         }
         optimizer = optimization_algorithm_dict[self.optimization_algorithm]
 
@@ -203,7 +225,6 @@ class Network(SiameseNetwork):
         # endregion
 
         num_subepochs = 1 if not self.augment else 9
-
         top_val_acc = 0
         top_val_acc_step = -1
         val_acc = 0
@@ -217,6 +238,7 @@ class Network(SiameseNetwork):
             subepoch_loss = subepoch_acc = 0
             dataloader = DataLoader(omniglot_dataset, batch_size=batch_size, shuffle=True, num_workers=1)
             if epoch == -1:
+                # Needed for right train summary log
                 num_train_batches = 1
                 subepoch = num_subepochs - 1
             else:
@@ -241,6 +263,7 @@ class Network(SiameseNetwork):
                     step = epoch * num_subepochs + subepoch
                     print('time: {:02}:{:02}, subepoch {}.{}(step {}), loss:{:5.3f}, acc.:{:4.3f};'.format(time_now.hour, time_now.minute, epoch, subepoch,
                                                                                                            step, subepoch_loss, subepoch_acc), end='')
+
                     val_acc = self.new_check_one_shot_learning(sess_elements, val_trials, val_trials_len, num_val_trials_batches, batch_size)
                     print(' validation acc.: {:4.3f}/{:4.3f} (best on step {:2})'.format(val_acc, top_val_acc, top_val_acc_step), end='')
 
@@ -254,10 +277,15 @@ class Network(SiameseNetwork):
                     else:
                         print('')
 
+                    # Better tags were Validation/OSL and Evaluation/OSL
                     summary = tf.Summary()
                     summary.value.add(tag='OneShotLearning/Validation', simple_value=val_acc)
-                    summary.value.add(tag='OneShotLearning/Evaluation', simple_value=eval_acc)
                     summary_writer.add_summary(summary, step)
+
+                    summary = tf.Summary()
+                    summary.value.add(tag='OneShotLearning/Evaluation', simple_value=eval_acc)
+                    # Add value for test with no step
+                    summary_writer.add_summary(summary)
                     summary_writer.flush()
 
                     subepoch_loss = subepoch_acc = 0
@@ -283,16 +311,17 @@ class Network(SiameseNetwork):
 
 
 if __name__ == '__main__':
+    # No batch_norm graph
+    # Adam
+    # AdagradDA
+    # Different alphabets pairs
+    # Chi-square metric
 
-    net = Network(debug=False, verbose=False, back_pairs_amount=30000, augment=False, batch_size=256,
-                  starter_learning_rate=0.05, weight_decay=0.00001, lr_decay=0.99)
-    net.fit()
+    net = Network(debug=False, verbose=False, back_pairs_amount=150000, augment=True, batch_size=256, starter_learning_rate=0.05,
+                  weight_decay=0.00001, lr_decay=0.99, optimization_algorithm='Adagrad')
+    net.fit(num_epochs=100)
     del net
 
     ops.reset_default_graph()
     sess = tf.Session(config=config)
 
-    net = Network(debug=False, verbose=False, back_pairs_amount=150000, augment=True, batch_size=256,
-                  starter_learning_rate=0.05, weight_decay=0.00001, lr_decay=0.99)
-    net.fit()
-    del net
