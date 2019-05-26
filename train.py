@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from model import SiameseNetwork
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 config = tf.ConfigProto(log_device_placement=False)
 # config.gpu_options.per_process_gpu_memory_fraction = 0.95
