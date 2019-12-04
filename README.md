@@ -7,7 +7,5 @@ This model is based on two papers:
 
 Aim is to gain better accuracy with modern SENet architecture, with same training pipeline as in 1-st paper. 
 
-Total development description will be given after stable models release (May-June 2019).
-
 Useful links: 
 - the most full implementation found on the web, with rich description: [Goldesel23](https://github.com/Goldesel23/Siamese-Networks-for-One-Shot-Learning)
